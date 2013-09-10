@@ -1,6 +1,4 @@
 return {
-    powawa => 'hoge',
-
     datadir => 'data',
 
     github => {
@@ -8,8 +6,11 @@ return {
             user => 'your username',
             token => 'your OAuth token',
         },
-
+        issues => {
+            # prefix => {
+            #     user => 'github user',
+            #     repo => 'github repo',
+            # },
+        },
     },
-
-
 };
