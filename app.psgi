@@ -10,6 +10,7 @@ use Path::Class qw/file dir/;
 use Git::Repository;
 use Time::Piece;
 use Pithub;
+use JSON::XS;
 
 use Encode;
 
@@ -131,15 +132,20 @@ get '/task/:title/_edit' => sub {
     });
 };
 
-get '/task/:title/_hisory' => sub {
+get '/task/:title/_history' => sub {
     my ($c, $args) = @_;
     my $title = $args->{title};
 
     # fetch git log about this file
+    my $output = $c->git->run('log', "$title.md");
+
+    say 'git log' . $output;
+
+    my $git_log = $c->_parse_git_log($output);
 
     return $c->render('history.tx', {
-        title => $title,
-        body  => 'ここにhistoryが入るぞ',
+        title    => $title,
+        contents => $git_log,
     });
 };
 
@@ -193,8 +199,31 @@ sub _replace_issues {
 
     # replace issue status for each issue
     for my $key (keys $self->config->{github}{issues}) {
+        my @bulk_ids;
         my @issue_ids;
-        push @issue_ids, $html =~ /$key:([\d]+)/g;
+        push @bulk_ids, $html =~ /$key:([\d,]+)/g;
+        map { push @issue_ids, split /,/, $_ } @bulk_ids;
+
+        my %result_hash;
+        for my $id (@issue_ids) {
+            my $result = $self->github->issues->get(
+                %{ $self->config->{github}{issues}{$key} },
+                issue_id => $id,
+            );
+
+            $result_hash{$id} = $result;
+        }
+
+#        use YAML;
+#        warn Dump %result_hash;
+
+        {
+            $html =~ s!$key:([\d,]+)!
+                my @ids = split /,/, $1;
+                say 'ids: ' . join ',', @ids;
+                $self->_markup_issue(map { $result_hash{$_} } @ids);
+            !gex;
+        }
 
     }
 
@@ -202,6 +231,65 @@ sub _replace_issues {
 
 
     return $result;
+}
+
+sub _markup_issue {
+    my ($self, @result) = @_;
+
+    # $result->contentはencoding utf8じゃなくて使い物にならないので
+    # ここで直接JSON::XSでやってしまう
+    state $json_driver = JSON::XS->new->utf8;
+    my @contents;
+    for my $res (@result) {
+        push @contents, $json_driver->decode($res->response->content);
+    }
+
+#    use YAML;
+#    warn Dump @contents;
+
+    $self->create_view->render('issue.tx', {
+        contents => [ @contents ]
+    });
+}
+
+sub _parse_git_log {
+    my ($self, $output) = @_;
+
+    say 'output' . $output;
+
+    my @result;
+    my $working;
+    for my $line (split /\n/, $output) {
+        chomp $line;
+        say $line;
+        given ($line) {
+            when (/^commit/) {
+                push @result, $working if $working;
+                $working = {};
+                $working->{commit} = s/^commit ([0-9a-z]+)/$1/r;
+            }
+            when (/^Author:/) {
+                $working->{author} = s/^Author: (.+)/$1/r;
+            }
+            when (/^Date:/) {
+                $working->{date} = s/^Date:\s+(.+)/$1/r;
+            }
+            default {
+                my $trimed = s/^\s*//r;
+                if ($trimed) {
+                    $working->{message} .= "<br />" if $working->{message};
+                    $working->{message} .= $trimed;
+                }
+            }
+        }
+    }
+
+    push @result, $working if $working;
+
+    use YAML;
+    warn Dump @result;
+
+    return [ @result ];
 }
 
 
@@ -214,7 +302,10 @@ __PACKAGE__->load_plugin('Web::CSRFDefender' => {
 # __PACKAGE__->load_plugin('Web::JSON');
 
 __PACKAGE__->enable_session();
-__PACKAGE__->template_options( syntax => 'Kolon' );
+__PACKAGE__->template_options(
+    syntax => 'Kolon',
+#    cache => 0,
+);
 
 __PACKAGE__->to_app(handle_static => 1);
 
@@ -230,14 +321,17 @@ __DATA__
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <script type="text/javascript" src="http://ajax.googleapis.com/ajax/libs/jquery/1.9.1/jquery.min.js"></script>
 <script type="text/javascript" src="<: uri_for('/static/js/main.js') :>"></script>
-<link href="//netdna.bootstrapcdn.com/twitter-bootstrap/2.3.1/css/bootstrap-combined.min.css" rel="stylesheet">
-<script src="//netdna.bootstrapcdn.com/twitter-bootstrap/2.3.1/js/bootstrap.min.js"></script>
+<link href="//netdna.bootstrapcdn.com/bootstrap/3.0.0/css/bootstrap.min.css" rel="stylesheet">
+<script src="//netdna.bootstrapcdn.com/bootstrap/3.0.0/js/bootstrap.min.js"></script>
 <link rel="stylesheet" href="<: uri_for('/static/css/main.css') :>">
 </head>
 <body>
 <div class="container">
-<header><h1>Powawa::Taskmemo</h1></header>
+<header><h1><a href="<: uri_for('/') :>">Powawa::Taskmemo</a></h1></header>
+
+<div class="row">
 : block main -> {}
+</div>
 <footer>Powered by <a href="http://amon.64p.org/">Amon2::Lite</a></footer>
 </div>
 </body>
@@ -247,7 +341,6 @@ __DATA__
 @@ index.tx
 : cascade template
 : around main -> { 
-<section class="row">
 <p>Task Memo List</p>
 <ul>
 : for $memos -> $memo {
@@ -255,63 +348,126 @@ __DATA__
 : }
 <li><a href="<: uri_for('/new') :>">... or create new</a></li>
 </ul>
-</section>
 : }
 
 
 @@ new.tx
 : cascade template
 : around main -> { 
-<section class="row">
 <h2>Input Name</h2>
 <form action="<: uri_for('/new') :>" method="post">
 <input name="name" type="text" size="30"></input>
-<input type="submit" class="btn btn-info"></input>
+<input type="submit" class="btn btn-primary"></input>
 </form>
-</section>
 : }
 
 @@ markdown.tx
 : cascade template
 : around main -> { 
-<section class="row">
 <h2><:= $title :></h2>
+
+<p>
+<a href="<: uri_for('/task/' ~ $title ~ '/_edit') :>" class="btn btn-primary">Edit</a>
+<a href="<: uri_for('/task/' ~ $title ~ '/_delete') :>" class="btn btn-danger">Delete</a>
+<a href="<: uri_for('/task/' ~ $title ~ '/_history') :>" class="btn btn-info">History</a>
+</p>
 
 <:= $body | mark_raw:>
 
-<a href="<: uri_for('/task/' ~ $title ~ '/_edit') :>"><input type="button" value="Edit" /></a>
-
-</section>
 : }
 
 @@ edit.tx
 
 : cascade template
 : around main -> { 
-<section class="row">
 <h2>Edit: <:= $title :>.md</h2>
 
-<form action="<: uri_for('/task/' ~ $title ~ '/_edit') :>" method="post">
-<div>
-<textarea name="body" rows="28" class="span8">
+<form action="<: uri_for('/task/' ~ $title ~ '/_edit') :>" method="post" class="form-horizontal">
+<div class="control-group">
+<div class="control">
+<textarea name="body" rows="28" class="input-xlarge" cols="120">
 <:= $body | mark_raw :>
 </textarea>
+</div>
 <div>
-<p><input type="submit" class="btm btn-info"/></p>
+<div class="form-actions">
+<button type="submit" class="btn btn-primary"/>Submit</button>
+</div>
 
 </form>
-</section>
 : }
 
 
 @@ delete_confirm.tx
 : cascade template
 : around main -> { 
-<section class="row">
 <h2>Are you sure to delete '<:= $title :>.md' ?</h2>
 
-</section>
 : }
+
+@@ history.tx
+
+: cascade template
+: around main -> {
+<h2>History of <:= $title :>.md</h2>
+
+
+<table class="table table-bordered table-striped">
+<thead>
+<tr>
+<th>date</th>
+<th>commit</th>
+<th>message</th>
+</tr>
+</thead>
+<tbody>
+: for $contents -> $content {
+<tr>
+<td><:= $content.date :></td>
+<td><:= $content.commit :></td>
+<td><:= $content.message :></td>
+</tr>
+: }
+</tbody>
+</table>
+
+: }
+
+
+
+@@ issue.tx
+<table class="table table-bordered table-striped">
+<tbody>
+: for $contents -> $content {
+<tr>
+<th style="width: 50px"> #<:= $content.number :> </th>
+<th ><a href="<:= $content.html_url :>"><:= $content.title :></a></th>
+<td style="width: 60px">
+: if $content.state == 'open' {
+<span class="label label-success">Open</span>
+: } else {
+<span class="label label-inverse">Closed</span>
+: }
+</td>
+<td style="width: 150px">
+: if $content.assignee {
+<img src="<:= $content.assignee.avatar_url :>" alt="<:= $content.assignee.login :>" width="16" height="16"/> <:= $content.assignee.login :>
+: } else {
+<i class="icon-remove"></i> not assigned...
+: }
+</td>
+<td style="width: 150px">
+: if $content.milestone {
+<a href="<:= $content.milestone.url :>"><span class="label label-warning"><:= $content.milestone.title :></span></a>
+: } else {
+<span class="label label-info">No Milestone</span>
+: }
+</td>
+</tr>
+: }
+</tbody>
+</table>
+
 
 
 @@ /static/js/main.js
@@ -320,3 +476,19 @@ __DATA__
 footer {
     text-align: right;
 }
+body {
+    background-color: #F8F8F8;
+}
+div.row {
+    padding: 0 10px;
+    background-color: #FFFFFF;
+    border: 1px solid #999999;
+}
+
+textarea {
+    font-family: monospace;
+}
+li {
+    line-height: 1.5em;
+}
+

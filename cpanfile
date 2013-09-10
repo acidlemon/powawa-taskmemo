@@ -1,3 +1,4 @@
+requires 'JSON::XS';
 requires 'Amon2';
 requires 'Amon2::Lite';
 requires 'Text::Xslate';
