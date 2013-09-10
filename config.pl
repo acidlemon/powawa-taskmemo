@@ -1,6 +1,5 @@
 return {
     datadir => 'data',
-
     github => {
         auth => {
             user => 'your username',

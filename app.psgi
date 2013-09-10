@@ -301,14 +301,14 @@ __PACKAGE__->load_plugin('Web::CSRFDefender' => {
 # __PACKAGE__->load_plugin('Web::FillInFormLite');
 # __PACKAGE__->load_plugin('Web::JSON');
 
-__PACKAGE__->enable_session();
+
+__PACKAGE__->enable_session( store => 'File' );
 __PACKAGE__->template_options(
     syntax => 'Kolon',
 #    cache => 0,
 );
 
 __PACKAGE__->to_app(handle_static => 1);
-
 
 __DATA__
 
