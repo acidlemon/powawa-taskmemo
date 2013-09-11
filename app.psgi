@@ -31,6 +31,7 @@ sub _build_git {
     my $repos;
 
     if (-d $self->datadir) {
+        mkdir $self->datadir;
         $repos = Git::Repository->new( git_dir => $self->datadir . '/.git' );
     } else {
         $repos = Git::Repository->run( init => $self->datadir );
@@ -197,6 +198,8 @@ sub _markdown {
 sub _replace_issues {
     my ($self, $html) = @_;
 
+    state $json_driver = JSON::XS->new->utf8;
+
     # replace issue status for each issue
     for my $key (keys $self->config->{github}{issues}) {
         my @bulk_ids;
@@ -204,14 +207,35 @@ sub _replace_issues {
         push @bulk_ids, $html =~ /$key:([\d,]+)/g;
         map { push @issue_ids, split /,/, $_ } @bulk_ids;
 
+        # まずOpenのIssueをリストで一気に取得
         my %result_hash;
+
+        # ホントはpithubのauto_paginationで回したいのだが
+        # utf8をちゃんと扱ってないので自力で回す
+        my $result = $self->github->issues->list(
+            %{ $self->config->{github}{issues}{$key} },
+            state => 'open',
+        );
+        while ($result) {
+            my $arrayref = $json_driver->decode($result->response->content);
+
+            for my $hash (@$arrayref) {
+                $result_hash{ $hash->{number} } = $hash;
+            }
+
+            $result = $result->next_page;
+        }
+
+        # 残り、hashが存在しないものを取得
         for my $id (@issue_ids) {
+            next if $result_hash{$id};
+
             my $result = $self->github->issues->get(
                 %{ $self->config->{github}{issues}{$key} },
                 issue_id => $id,
             );
 
-            $result_hash{$id} = $result;
+            $result_hash{$id} = $json_driver->decode($result->response->content);
         }
 
 #        use YAML;
@@ -241,7 +265,7 @@ sub _markup_issue {
     state $json_driver = JSON::XS->new->utf8;
     my @contents;
     for my $res (@result) {
-        push @contents, $json_driver->decode($res->response->content);
+        push @contents, $res;
     }
 
 #    use YAML;
