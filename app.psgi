@@ -207,6 +207,8 @@ sub _replace_issues {
         push @bulk_ids, $html =~ /$key:([\d,]+)/g;
         map { push @issue_ids, split /,/, $_ } @bulk_ids;
 
+        next unless scalar @issue_ids;
+
         # まずOpenのIssueをリストで一気に取得
         my %result_hash;
 
