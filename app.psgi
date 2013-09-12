@@ -141,7 +141,7 @@ get '/task/:title/_history' => sub {
     # fetch git log about this file
     my $output = $c->git->run('log', "$title.md");
 
-    say 'git log' . $output;
+    #say 'git log' . $output;
 
     my $git_log = $c->_parse_git_log($output);
 
@@ -255,7 +255,7 @@ sub _replace_issues {
         {
             $html =~ s!$key:([\d,]+)!
                 my @ids = split /,/, $1;
-                say 'ids: ' . join ',', @ids;
+                #say 'ids: ' . join ',', @ids;
                 $self->_markup_issue(map { $result_hash{$_} } @ids);
             !gex;
         }
@@ -290,13 +290,13 @@ sub _markup_issue {
 sub _parse_git_log {
     my ($self, $output) = @_;
 
-    say 'output' . $output;
+    #say 'output' . $output;
 
     my @result;
     my $working;
     for my $line (split /\n/, $output) {
         chomp $line;
-        say $line;
+        #say $line;
         given ($line) {
             when (/^commit/) {
                 push @result, $working if $working;
