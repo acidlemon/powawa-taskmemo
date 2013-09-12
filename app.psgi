@@ -113,6 +113,7 @@ get '/task/:title' => sub {
 
     my $result = $c->_markdown($body);
     my $html = $c->_replace_issues(decode_utf8 $result->response->content);
+    $html = $c->_filter_html($html);
 
     return $c->render('markdown.tx', {
         title => $title,
@@ -193,6 +194,14 @@ sub _markdown {
             mode => 'gfm',
         }
     );
+
+}
+
+sub _filter_html {
+    my ($self, $html) = @_;
+
+    # tableにclass="table-bordered table-striped" つける
+    $html =~ s/<table>/<table class="table table-bordered table-striped">/gr;
 }
 
 sub _replace_issues {
@@ -312,8 +321,8 @@ sub _parse_git_log {
 
     push @result, $working if $working;
 
-    use YAML;
-    warn Dump @result;
+#    use YAML;
+#    warn Dump @result;
 
     return [ @result ];
 }
