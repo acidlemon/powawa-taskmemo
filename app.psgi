@@ -17,7 +17,7 @@ use Encode;
 our $VERSION = '0.10';
 
 use Class::Accessor::Lite::Lazy (
-    ro_lazy => [ qw/git github datadir/ ]
+    ro_lazy => [ qw/git github datadir json/ ]
 );
 
 sub _build_datadir {
@@ -44,6 +44,10 @@ sub _build_github {
     my $self = shift;
 
     my $github = Pithub->new( %{ $self->config->{github}{auth} } );
+}
+
+sub _build_json {
+    my $json_driver = JSON::XS->new->utf8;
 }
 
 sub catfile {
@@ -139,7 +143,7 @@ get '/task/:title/_history' => sub {
     my $title = $args->{title};
 
     # fetch git log about this file
-    my $output = $c->git->run('log', "$title.md");
+    my $output = $c->git->run('log', '--', "$title.md");
 
     #say 'git log' . $output;
 
@@ -173,9 +177,13 @@ get '/task/:title/_delete' => sub {
     });
 };
 
-get '/task/:title/_delete/_yes' => sub {
+post '/task/:title/_delete' => sub {
     my ($c, $args) = @_;
     my $title = $args->{title};
+
+    # delete
+    $c->git->run('rm', "$title.md");
+    $c->git->run('commit', '-m', "delete $title.md");
 
     return $c->redirect('/');
 };
@@ -207,7 +215,17 @@ sub _filter_html {
 sub _replace_issues {
     my ($self, $html) = @_;
 
-    state $json_driver = JSON::XS->new->utf8;
+    $html = $self->_replace_github_issues($html);
+
+    $html = $self->_replace_redmine_issues($html);
+
+    my $result = $html;
+
+    return $result;
+}
+
+sub _replace_github_issues {
+    my ($self, $html) = @_;
 
     # replace issue status for each issue
     for my $key (keys $self->config->{github}{issues}) {
@@ -228,7 +246,7 @@ sub _replace_issues {
             state => 'open',
         );
         while ($result) {
-            my $arrayref = $json_driver->decode($result->response->content);
+            my $arrayref = $self->json->decode($result->response->content);
 
             for my $hash (@$arrayref) {
                 $result_hash{ $hash->{number} } = $hash;
@@ -246,7 +264,7 @@ sub _replace_issues {
                 issue_id => $id,
             );
 
-            $result_hash{$id} = $json_driver->decode($result->response->content);
+            $result_hash{$id} = $self->json->decode($result->response->content);
         }
 
 #        use YAML;
@@ -262,10 +280,67 @@ sub _replace_issues {
 
     }
 
-    my $result = $html;
+    return $html;
+}
 
 
-    return $result;
+sub _replace_redmine_issues {
+    my ($self, $html) = @_;
+
+    # replace issue status for each issue
+    for my $key (keys $self->config->{github}{issues}) {
+        my @bulk_ids;
+        my @issue_ids;
+        push @bulk_ids, $html =~ /$key:([\d,]+)/g;
+        map { push @issue_ids, split /,/, $_ } @bulk_ids;
+
+        next unless scalar @issue_ids;
+
+        # まずOpenのIssueをリストで一気に取得
+        my %result_hash;
+
+        # ホントはpithubのauto_paginationで回したいのだが
+        # utf8をちゃんと扱ってないので自力で回す
+        my $result = $self->github->issues->list(
+            %{ $self->config->{github}{issues}{$key} },
+            state => 'open',
+        );
+        while ($result) {
+            my $arrayref = $self->json->decode($result->response->content);
+
+            for my $hash (@$arrayref) {
+                $result_hash{ $hash->{number} } = $hash;
+            }
+
+            $result = $result->next_page;
+        }
+
+        # 残り、hashが存在しないものを取得
+        for my $id (@issue_ids) {
+            next if $result_hash{$id};
+
+            my $result = $self->github->issues->get(
+                %{ $self->config->{github}{issues}{$key} },
+                issue_id => $id,
+            );
+
+            $result_hash{$id} = $self->json->decode($result->response->content);
+        }
+
+#        use YAML;
+#        warn Dump %result_hash;
+
+        {
+            $html =~ s!$key:([\d,]+)!
+                my @ids = split /,/, $1;
+                #say 'ids: ' . join ',', @ids;
+                $self->_markup_issue(map { $result_hash{$_} } @ids);
+            !gex;
+        }
+
+    }
+
+    return $html;
 }
 
 sub _markup_issue {
@@ -273,7 +348,6 @@ sub _markup_issue {
 
     # $result->contentはencoding utf8じゃなくて使い物にならないので
     # ここで直接JSON::XSでやってしまう
-    state $json_driver = JSON::XS->new->utf8;
     my @contents;
     for my $res (@result) {
         push @contents, $res;
@@ -437,7 +511,10 @@ __DATA__
 : cascade template
 : around main -> { 
 <h2>Are you sure to delete '<:= $title :>.md' ?</h2>
-
+<form action="<: uri_for('/task/' ~ $title ~ '/_delete') :>" method="post">
+<input type="submit" value="Yes, Delete." class="btn btn-danger"/>
+<a href="<: uri_for('/task/' ~ $title) :>" class="btn btn-info">No, I will back...</a>
+</form>
 : }
 
 @@ history.tx
@@ -481,7 +558,7 @@ __DATA__
 : if $content.state == 'open' {
 <span class="label label-success">Open</span>
 : } else {
-<span class="label label-inverse">Closed</span>
+<span class="label label-danger">Closed</span>
 : }
 </td>
 <td style="width: 150px">
